@@ -19,11 +19,38 @@
 #include "lwip/sockets.h"
 #include "ping/ping_sock.h"
 
+#include "cJSON.h"
+
 #include "protocol_examples_common.h"
 
 #define CONFIG_SEND_FREQUENCY 100
 
 static const char *TAG = "csi_recv_router";
+
+int sockfd;
+struct sockaddr_in servaddr;
+
+static void init_socket()
+{
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd == -1)
+  {
+    printf("Failed to create socket\n");
+    return;
+  }
+
+  servaddr.sin_family = AF_INET;
+  servaddr.sin_port = htons(8080);
+  servaddr.sin_addr.s_addr = inet_addr("192.168.31.101");
+
+  if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) != 0)
+  {
+    printf("Failed to connect to the server\n");
+    close(sockfd);
+    sockfd = -1;
+    return;
+  }
+}
 
 static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 {
@@ -50,21 +77,37 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
   /** Only LLTF sub-carriers are selected. */
   info->len = 128;
 
-  printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-         s_count++, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
-         rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
-         rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
-         rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
-         rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->rx_state);
+  char data[1024];
+  int offset = 0;
+  // 第一部分
+  offset += snprintf(data + offset, sizeof(data) - offset, "CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                     s_count++, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
+                     rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
+                     rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
+                     rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
+                     rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->rx_state);
 
-  printf(",%d,%d,\"[%d", info->len, info->first_word_invalid, info->buf[0]);
-
-  for (int i = 1; i < info->len; i++)
+  if (sizeof(data) - offset > 0)
   {
-    printf(",%d", info->buf[i]);
+    offset += snprintf(data + offset, sizeof(data) - offset, ",%d,%d,[%d", info->len, info->first_word_invalid, info->buf[0]);
   }
 
-  printf("]\"\n");
+  for (int i = 1; i < info->len && sizeof(data) - offset > 0; i++)
+  {
+    offset += snprintf(data + offset, sizeof(data) - offset, ",%d", info->buf[i]);
+  }
+
+  if (sizeof(data) - offset > 0)
+  {
+    snprintf(data + offset, sizeof(data) - offset, "]");
+  }
+
+  printf("%s\n", data);
+
+  if (sockfd != -1)
+  {
+    send(sockfd, data, strlen(data), 0);
+  }
 }
 
 static void wifi_csi_init()
@@ -125,6 +168,7 @@ void app_main()
    */
   ESP_ERROR_CHECK(example_connect());
 
+  init_socket();
   wifi_csi_init();
   wifi_ping_router_start();
 }
