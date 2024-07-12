@@ -24,6 +24,8 @@
 #include "protocol_examples_common.h"
 
 #define CONFIG_SEND_FREQUENCY 100
+#define CONFIG_SERVER_IP "192.168.31.101"
+#define CONFIG_SERVER_PORT 8080
 
 static const char *TAG = "csi_recv_router";
 
@@ -40,8 +42,8 @@ static void init_socket()
   }
 
   servaddr.sin_family = AF_INET;
-  servaddr.sin_port = htons(8080);
-  servaddr.sin_addr.s_addr = inet_addr("192.168.31.101");
+  servaddr.sin_port = htons(CONFIG_SERVER_PORT);
+  servaddr.sin_addr.s_addr = inet_addr(CONFIG_SERVER_IP);
 
   if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) != 0)
   {
