@@ -79,7 +79,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
   char data[1024];
   int offset = 0;
-  // 第一部分
+  
   offset += snprintf(data + offset, sizeof(data) - offset, "CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
                      s_count++, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
                      rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
@@ -99,10 +99,10 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
   if (sizeof(data) - offset > 0)
   {
-    snprintf(data + offset, sizeof(data) - offset, "]");
+    snprintf(data + offset, sizeof(data) - offset, "]\n");
   }
 
-  printf("%s\n", data);
+  printf("%s", data);
 
   if (sockfd != -1)
   {
