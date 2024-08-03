@@ -91,7 +91,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
   if (sizeof(data) - offset > 0)
   {
-    offset += snprintf(data + offset, sizeof(data) - offset, ",%d,%d,[%d", info->len, info->first_word_invalid, info->buf[0]);
+    offset += snprintf(data + offset, sizeof(data) - offset, ",%d,%d,\"[%d", info->len, info->first_word_invalid, info->buf[0]);
   }
 
   for (int i = 1; i < info->len && sizeof(data) - offset > 0; i++)
@@ -101,7 +101,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
   if (sizeof(data) - offset > 0)
   {
-    snprintf(data + offset, sizeof(data) - offset, "]\n");
+    snprintf(data + offset, sizeof(data) - offset, "]\"\n");
   }
 
   printf("%s", data);
