@@ -1,3 +1,4 @@
+#pragma once
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 extern EventGroupHandle_t s_wifi_event_group;
 

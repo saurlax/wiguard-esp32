@@ -19,7 +19,7 @@ EventGroupHandle_t s_wifi_event_group;
 
 const int WIFI_CONNECTED_BIT = BIT0;
 const int ESPTOUCH_DONE_BIT = BIT1;
-const char *SMART_CONFIG_TAG = "smartconfig_example";
+static const char *SMART_CONFIG_TAG = "smartconfig_example";
 
 void smartconfig_example_task(void *parm);
 
@@ -55,7 +55,7 @@ void event_handler(void *arg, esp_event_base_t event_base,
     wifi_config_t wifi_config;
     uint8_t ssid[33] = {0};
     uint8_t password[65] = {0};
-    uint8_t rvd_data[33] = {0};
+    uint8_t rvd_data[128] = {0};
 
     bzero(&wifi_config, sizeof(wifi_config_t));
     memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
@@ -77,12 +77,13 @@ void event_handler(void *arg, esp_event_base_t event_base,
     if (evt->type == SC_TYPE_ESPTOUCH_V2)
     {
       ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
-      ESP_LOGI(SMART_CONFIG_TAG, "RVD_DATA:");
-      for (int i = 0; i < 33; i++)
-      {
-        printf("%02x ", rvd_data[i]);
-      }
-      printf("\n");
+      ESP_LOGI(SMART_CONFIG_TAG, "RVD_DATA:%s", rvd_data);
+      // rvd_data is excepted to be a mqtt broker uri
+      nvs_handle_t nvs_handle;
+      ESP_ERROR_CHECK(nvs_open("wiguard", NVS_READWRITE, &nvs_handle));
+      ESP_ERROR_CHECK(nvs_set_str(nvs_handle, "broker_uri", (char *)rvd_data));
+      ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+      nvs_close(nvs_handle);
     }
 
     ESP_ERROR_CHECK(esp_wifi_disconnect());

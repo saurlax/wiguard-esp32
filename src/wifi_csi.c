@@ -15,10 +15,14 @@
 #include "ping/ping_sock.h"
 
 #include "wifi_csi.h"
+#include "mqtt.h"
 
-#define CONFIG_SEND_FREQUENCY 100
+// How many packets to send per second
+#define CONFIG_SEND_FREQUENCY 10
 
-const char *WIFI_CSI_TAG = "csi_recv_router";
+static const char *WIFI_CSI_TAG = "csi_recv_router";
+static char wifi_csi_buffer[2048];
+static int wifi_csi_buffer_len = 0;
 
 /**
  * @brief Callback function to receive CSI data.
@@ -34,12 +38,6 @@ void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
   static int s_count = 0;
   const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
-
-  if (!s_count)
-  {
-    ESP_LOGI(WIFI_CSI_TAG, "================ CSI RECV ================");
-    ets_printf("type,seq,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,secondary_channel,local_timestamp,ant,sig_len,rx_state,len,first_word,data\n");
-  }
 
   /** Only LLTF sub-carriers are selected. */
   info->len = 128;
@@ -69,7 +67,17 @@ void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     snprintf(data + offset, sizeof(data) - offset, "]\"\n");
   }
 
-  printf("%s", data);
+  if (wifi_csi_buffer_len + strlen(data) < sizeof(wifi_csi_buffer))
+  {
+    strcat(wifi_csi_buffer, data);
+    wifi_csi_buffer_len += strlen(data);
+  }
+  else
+  {
+    send_csi(client, wifi_csi_buffer);
+    wifi_csi_buffer[0] = '\0';
+    wifi_csi_buffer_len = 0;
+  }
 }
 
 /**
