@@ -18,7 +18,7 @@
 #include "mqtt.h"
 
 // How many packets to send per second
-#define CONFIG_SEND_FREQUENCY 10
+#define CONFIG_SEND_FREQUENCY 50
 
 static const char *WIFI_CSI_TAG = "csi_recv_router";
 static char wifi_csi_buffer[2048];

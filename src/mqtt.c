@@ -96,8 +96,8 @@ void mqtt_app_start(void)
   const esp_mqtt_client_config_t mqtt_cfg = {
       .broker = {
           .address.uri = broker_uri,
+          // WARN: ca certificate not validated
       },
-      // WARN: ca certificate not validated
   };
 
   ESP_LOGI(MQTT_TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
