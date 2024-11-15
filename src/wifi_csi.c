@@ -18,10 +18,11 @@
 #include "mqtt.h"
 
 // How many packets to send per second
-#define CONFIG_SEND_FREQUENCY 50
+#define CONFIG_PING_FREQUENCY 20
+#define CONFIG_CSI_BUFFER_SIZE 2048
 
 static const char *WIFI_CSI_TAG = "csi_recv_router";
-static char wifi_csi_buffer[2048];
+static char wifi_csi_buffer[CONFIG_CSI_BUFFER_SIZE];
 static int wifi_csi_buffer_len = 0;
 
 /**
@@ -112,7 +113,7 @@ esp_err_t wifi_ping_router_start()
 
   esp_ping_config_t ping_config = ESP_PING_DEFAULT_CONFIG();
   ping_config.count = 0;
-  ping_config.interval_ms = 1000 / CONFIG_SEND_FREQUENCY;
+  ping_config.interval_ms = 1000 / CONFIG_PING_FREQUENCY;
   ping_config.task_stack_size = 3072;
   ping_config.data_size = 1;
 
