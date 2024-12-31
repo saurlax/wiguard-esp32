@@ -8,4 +8,4 @@ extern EventGroupHandle_t s_wifi_event_group;
 extern const int WIFI_CONNECTED_BIT;
 extern const int ESPTOUCH_DONE_BIT;
 
-void initialise_wifi(void);
+void wifi_init(void);

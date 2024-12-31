@@ -17,20 +17,19 @@
 #include "wifi_csi.h"
 #include "mqtt.h"
 
-// How many packets to send per second
+// The frequency of sending ping packets to the router
 #define CONFIG_PING_FREQUENCY 20
+// The size of the buffer for storing CSI data
+// Only send the data when the buffer is full
 #define CONFIG_CSI_BUFFER_SIZE 2048
 
-static const char *WIFI_CSI_TAG = "csi_recv_router";
-static char wifi_csi_buffer[CONFIG_CSI_BUFFER_SIZE];
-static int wifi_csi_buffer_len = 0;
+static const char *WIFI_CSI_TAG = "wifi_csi";
+static char csi_buffer[CONFIG_CSI_BUFFER_SIZE];
+static int csi_buffer_len = 0;
 
-/**
- * @brief Callback function to receive CSI data.
- */
+// Callback function to receive CSI data.
 void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 {
-
   if (!info || !info->buf)
   {
     ESP_LOGW(WIFI_CSI_TAG, "<%s> wifi_csi_cb", esp_err_to_name(ESP_ERR_INVALID_ARG));
@@ -40,55 +39,45 @@ void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
   static int s_count = 0;
   const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
 
-  /** Only LLTF sub-carriers are selected. */
+  // Only LLTF sub-carriers are selected.
   info->len = 128;
 
-  char data[1024];
-  int offset = 0;
+  char csi[1024];
+  size_t csi_len = 0;
 
-  offset += snprintf(data + offset, sizeof(data) - offset, "CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-                     s_count++, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
-                     rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
-                     rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
-                     rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
-                     rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->rx_state);
+  csi_len += snprintf(csi + csi_len, sizeof(csi) - csi_len, "CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                      s_count++, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
+                      rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
+                      rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
+                      rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
+                      rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->rx_state);
 
-  if (sizeof(data) - offset > 0)
+  csi_len += snprintf(csi + csi_len, sizeof(csi) - csi_len, ",%d,%d,\"[%d", info->len, info->first_word_invalid, info->buf[0]);
+  for (int i = 1; i < info->len; i++)
   {
-    offset += snprintf(data + offset, sizeof(data) - offset, ",%d,%d,\"[%d", info->len, info->first_word_invalid, info->buf[0]);
+    csi_len += snprintf(csi + csi_len, sizeof(csi) - csi_len, ",%d", info->buf[i]);
   }
+  csi_len += snprintf(csi + csi_len, sizeof(csi) - csi_len, "]\"\n");
 
-  for (int i = 1; i < info->len && sizeof(data) - offset > 0; i++)
+  if (csi_buffer_len + csi_len < sizeof(csi_buffer))
   {
-    offset += snprintf(data + offset, sizeof(data) - offset, ",%d", info->buf[i]);
-  }
-
-  if (sizeof(data) - offset > 0)
-  {
-    snprintf(data + offset, sizeof(data) - offset, "]\"\n");
-  }
-
-  if (wifi_csi_buffer_len + strlen(data) < sizeof(wifi_csi_buffer))
-  {
-    strcat(wifi_csi_buffer, data);
-    wifi_csi_buffer_len += strlen(data);
+    strcat(csi_buffer, csi);
+    csi_buffer_len += csi_len;
   }
   else
   {
-    send_csi(client, wifi_csi_buffer);
-    wifi_csi_buffer[0] = '\0';
-    wifi_csi_buffer_len = 0;
+    send_csi(client, csi_buffer);
+    strcpy(csi_buffer, csi);
+    csi_buffer_len = csi_len;
   }
 }
 
-/**
- * @brief Initialize CSI data reception.
- */
+esp_ping_handle_t ping_handle = NULL;
+
+// Initialize CSI data reception.
 void wifi_csi_init()
 {
-  /**
-   * @brief In order to ensure the compatibility of routers, only LLTF sub-carriers are selected.
-   */
+  // In order to ensure the compatibility of routers, only LLTF sub-carriers are selected.
   wifi_csi_config_t csi_config = {
       .lltf_en = true,
       .htltf_en = false,
@@ -105,12 +94,8 @@ void wifi_csi_init()
   ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
   ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(wifi_csi_rx_cb, s_ap_info.bssid));
   ESP_ERROR_CHECK(esp_wifi_set_csi(true));
-}
 
-esp_err_t wifi_ping_router_start()
-{
-  esp_ping_handle_t ping_handle = NULL;
-
+  // Initialize the ping configuration.
   esp_ping_config_t ping_config = ESP_PING_DEFAULT_CONFIG();
   ping_config.count = 0;
   ping_config.interval_ms = 1000 / CONFIG_PING_FREQUENCY;
@@ -125,7 +110,14 @@ esp_err_t wifi_ping_router_start()
 
   esp_ping_callbacks_t cbs = {0};
   esp_ping_new_session(&ping_config, &cbs, &ping_handle);
-  esp_ping_start(ping_handle);
+}
 
-  return ESP_OK;
+esp_err_t wifi_csi_start()
+{
+  return esp_ping_start(ping_handle);
+}
+
+esp_err_t wifi_csi_stop()
+{
+  return esp_ping_stop(ping_handle);
 }
