@@ -1,20 +1,20 @@
 import os
 import sys
-import socket
 import json
 import pandas as pd
 import numpy as np
-from threading import Thread, Event
+from threading import Thread
 from time import sleep, time
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button
 from io import StringIO
+import serial
+import serial.tools.list_ports
 
 ### Configuration ###
-PORT = 8000
+BAUD_RATE = 115200
 CLIP_SIZE = 100
 COLLECT_DURATION = 5
-PING_FREQUENCY = 1
 #####################
 
 # The buffer stores all the CSI data shown on the plot
@@ -51,13 +51,6 @@ def update(csi: pd.DataFrame):
     ax.set_xlim(0, shape[1])
     ax.set_ylim(0, shape[0])
 
-    global last_time, frame_count, fps
-    frame_count += 1
-    if time() - last_time > 1:
-        fps = frame_count / (time() - last_time)
-        last_time = time()
-        frame_count = 0
-
     stats.set_text(
         f"MIN: {np.min(amplitude):.2f} MAX: {np.max(amplitude):.2f} MEAN: {np.mean(amplitude):.2f} FPS: {fps:.2f}")
 
@@ -82,60 +75,39 @@ button = Button(plt.axes((0, 0.95, 0.15, 0.05)), 'Collect CSI')
 button.on_clicked(lambda _: Thread(target=collect_once).start())
 
 
-def tcping(client, stop_event, frequency):
-    interval = 1.0 / frequency
-    while not stop_event.is_set():
-        client.send(b'.')
-        sleep(interval)
-
-
-def on_connection(client, addr):
+def read_serial():
     global csi_buffer
-    print(f"Handling connection from {addr}")
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        raise Exception("No serial ports found")
+    serial_port = ports[0].device
 
-    stop_event = Event()
-    tcping_thread = Thread(target=tcping, args=(
-        client, stop_event, PING_FREQUENCY))
-    tcping_thread.start()
-
-    while True:
-        data = b''
-        # recvline
-        while True:
-            c = client.recv(1)
-            if c == b'\n':
-                break
-            data += c
-
-        if not data:
-            break
-
-        csidata = pd.read_csv(StringIO(data.decode()), header=None)
-        csi_buffer = pd.concat([csi_buffer, csidata], ignore_index=True)
-
-        if csi_path is not None:
-            csidata.to_csv(csi_path, index=False, header=False, mode='a')
-
-        if len(csi_buffer) >= CLIP_SIZE:
-            csi_buffer = csi_buffer.iloc[-CLIP_SIZE:].reset_index(drop=True)
-
-        update(csi_buffer)
-
-    stop_event.set()
-    tcping_thread.join()
-    client.close()
-    print(f"Connection from {addr} closed")
-
-
-def start_server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(('0.0.0.0', PORT))
-    server.listen(5)
-    print(f"Server listening on port {PORT}")
+    ser = serial.Serial(serial_port, BAUD_RATE)
+    print(f"Reading from serial port {serial_port} at {BAUD_RATE} baud")
 
     while True:
-        client, addr = server.accept()
-        Thread(target=on_connection, args=(client, addr), daemon=True).start()
+        line = ser.readline().decode().strip()
+        if "CSI_DATA" in line:
+            csidata = pd.read_csv(StringIO(line), header=None)
+            csi_buffer = pd.concat([csi_buffer, csidata], ignore_index=True)
+
+            if csi_path is not None:
+                csidata.to_csv(csi_path, index=False, header=False, mode='a')
+
+            if len(csi_buffer) >= CLIP_SIZE:
+                csi_buffer = csi_buffer.iloc[-CLIP_SIZE:].reset_index(
+                    drop=True)
+
+            global last_time, frame_count, fps
+            frame_count += 1
+            if time() - last_time > 1:
+                fps = frame_count / (time() - last_time)
+                last_time = time()
+                frame_count = 0
+
+            update(csi_buffer)
+        else:
+            print(line, end=None)
 
 
 if __name__ == '__main__':
@@ -143,6 +115,6 @@ if __name__ == '__main__':
         csi_buffer = pd.read_csv(sys.argv[1], header=None)
         update(csi_buffer)
     else:
-        Thread(target=start_server, daemon=True).start()
+        Thread(target=read_serial, daemon=True).start()
 
     plt.show()
