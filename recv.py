@@ -3,58 +3,125 @@ import sys
 import json
 import pandas as pd
 import numpy as np
-from threading import Thread
+from threading import Thread, Lock
 from time import sleep, time
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button
+from matplotlib.animation import FuncAnimation
 from io import StringIO
 import serial
 import serial.tools.list_ports
+from sklearn.decomposition import PCA
+import paho.mqtt.client as mqtt
+
 
 ### Configuration ###
-BAUD_RATE = 115200
+# BAUD_RATE = 115200
+BAUD_RATE = 921600
 CLIP_SIZE = 100
 COLLECT_DURATION = 5
+CMAP_MAX = 128
 #####################
 
 # The buffer stores all the CSI data shown on the plot
-csi_buffer = pd.DataFrame()
+csidata_buf = np.empty((0, 0))
+buffer_lock = Lock()
 
 # Used to store the path of the file to save the CSI data
 # None means not ongoing saving, which can avoid multiple saving at the same time
 csi_path = None
 
-fig, ax = plt.subplots(num='ESP CSI Amplitude Heatmap')
-plt.xlabel('Packet Index')
-plt.ylabel('Subcarrier Index')
+# Create subplots for heatmap, complex plane, and RSSI display modes
+fig, ((ax_heatmap, ax_complex), (ax_rssi, ax_empty)) = plt.subplots(
+    2, 2, figsize=(9, 6), gridspec_kw={'height_ratios': [3, 1]}, num='ESP CSI Display')
 
-heatmap = ax.imshow([[0]], cmap='jet',
-                    interpolation='nearest', aspect='auto', origin='lower')
-heatmap.set_clim(vmin=0, vmax=64)
-cbar = plt.colorbar(heatmap, ax=ax, label='Amplitude')
+# Heatmap setup
+ax_heatmap.set_title('Heatmap')
+ax_heatmap.set_ylabel('Subcarrier Index')
+ax_heatmap.set_xlim(0, CLIP_SIZE)
+heatmap = ax_heatmap.imshow([[0]], cmap='jet',
+                            interpolation='nearest', aspect='auto', origin='lower')
+heatmap.set_clim(vmin=0, vmax=CMAP_MAX)
+cbar = plt.colorbar(heatmap, ax=ax_heatmap, label='Amplitude')
+
+# Complex plane setup
+ax_complex.set_title('Complex Plane')
+ax_complex.set_xlim(-CMAP_MAX, CMAP_MAX)
+ax_complex.set_ylim(-CMAP_MAX, CMAP_MAX)
+ax_complex.axhline(0, color='black', linewidth=0.5)
+ax_complex.axvline(0, color='black', linewidth=0.5)
+ax_complex.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+# Initialize plot lines and circle for complex plane
+sc = ax_complex.scatter([], [], c=[], cmap='viridis')
+circle = plt.Circle((0, 0), 0, color='red', linestyle='--', fill=False)
+ax_complex.add_artist(circle)
+
+# RSSI setup
+ax_rssi.set_xlabel('Packet Index')
+ax_rssi.set_ylabel('RSSI')
+ax_rssi.set_xlim(0, CLIP_SIZE)
+ax_rssi.set_ylim(-60, -20)  # Adjusted height range for RSSI
+rssi_line, = ax_rssi.plot([], [], 'r-')
+
+ax_pca = ax_rssi.twinx()
+ax_pca.set_ylabel('PCA')
+ax_pca.set_ylim(-128, 128)
+pca_line, = ax_pca.plot([], [], 'b-')
+
+# Hide the empty subplot
+ax_empty.axis('off')
 
 last_time = time()
 frame_count = 0
-fps = 0
-stats = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='white')
+freq = 0
+stats = ax_empty.text(0, 0, '', transform=ax_empty.transAxes, color='black')
+
+rssi_data = []
+
+# MQTT setup
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+mqtt_client.username_pw_set("admin", "admin")
+mqtt_client.tls_set("emqxsl-ca.crt")
+mqtt_client.connect("vfbc41b7.ala.cn-hangzhou.emqxsl.cn", 8883)
+mqtt_client.publish("user/admin", "Hello, World!")
 
 
-def update(csi: pd.DataFrame):
-    csidata = np.stack(csi.iloc[:, -1].apply(json.loads).apply(np.array)).T
-    csidata = csidata[::2]+csidata[1::2]*1j
+def update(frame):
+    global csidata_buf, rssi_data
+    with buffer_lock:
+        if len(csidata_buf) == 0:
+            return
 
-    amplitude = np.abs(csidata)
-    shape = amplitude.shape
-    heatmap.set_data(amplitude)
-    heatmap.set_extent((0, shape[1], 0, shape[0]))
+        # Update heatmap
+        amplitude = np.abs(csidata_buf).T
+        shape = amplitude.shape
+        heatmap.set_data(amplitude)
+        heatmap.set_extent((0, shape[1], 0, shape[0]))
+        ax_heatmap.set_ylim(0, shape[0])
 
-    ax.set_xlim(0, shape[1])
-    ax.set_ylim(0, shape[0])
+        # Update complex plane
+        real_data = csidata_buf[-1].real
+        imag_data = csidata_buf[-1].imag
+        colors = np.angle(csidata_buf[-1])
+        sc.set_offsets(np.c_[real_data, imag_data])
+        sc.set_array(colors)
+        circle.set_radius(np.mean(np.abs(csidata_buf)))
 
-    stats.set_text(
-        f"MIN: {np.min(amplitude):.2f} MAX: {np.max(amplitude):.2f} MEAN: {np.mean(amplitude):.2f} FPS: {fps:.2f}")
+        # Update RSSI
+        rssi_line.set_data(range(len(rssi_data)), rssi_data)
+        pca_line.set_data(range(len(rssi_data)), PCA(
+            n_components=1).fit_transform(amplitude.T))
 
-    plt.draw()
+        # 同时使用 mqtt发送数据
+        # mqtt_client.publish("user/admin", str(rssi_data[-1]))
+
+        stats.set_text(
+            f"""
+AMPL: {np.min(np.abs(csidata_buf)):.2f}-{np.max(np.abs(csidata_buf)):.2f}
+AVE: {np.mean(np.abs(csidata_buf)):.2f}
+FREQ: {freq:.2f}
+""")
 
 
 def collect_once():
@@ -71,50 +138,79 @@ def collect_once():
     csi_path = None
 
 
-button = Button(plt.axes((0, 0.95, 0.15, 0.05)), 'Collect CSI')
+button_ax = plt.axes(
+    [ax_empty.get_position().x0, ax_empty.get_position().y1 - 0.05, 0.15, 0.05])
+button = Button(button_ax, 'Collect CSI')
 button.on_clicked(lambda _: Thread(target=collect_once).start())
 
 
 def read_serial():
-    global csi_buffer
+    global csidata_buf, rssi_data
     ports = list(serial.tools.list_ports.comports())
     if not ports:
         raise Exception("No serial ports found")
     serial_port = ports[0].device
 
-    ser = serial.Serial(serial_port, BAUD_RATE)
+    ser = serial.Serial(serial_port, BAUD_RATE, rtscts=True)
     print(f"Reading from serial port {serial_port} at {BAUD_RATE} baud")
 
     while True:
-        line = ser.readline().decode().strip()
-        if "CSI_DATA" in line:
-            csidata = pd.read_csv(StringIO(line), header=None)
-            csi_buffer = pd.concat([csi_buffer, csidata], ignore_index=True)
+        try:
+            line = ser.readline().decode().strip()
+            if line.startswith("CSI_DATA"):
+                csi = pd.read_csv(StringIO(line), header=None)
+                csidata = json.loads(csi.iloc[0, -1])
 
-            if csi_path is not None:
-                csidata.to_csv(csi_path, index=False, header=False, mode='a')
+                csidata = np.array(csidata)
+                csidata = csidata[::2]*1j + csidata[1::2]
 
-            if len(csi_buffer) >= CLIP_SIZE:
-                csi_buffer = csi_buffer.iloc[-CLIP_SIZE:].reset_index(
-                    drop=True)
+                with buffer_lock:
+                    if len(csidata_buf) == 0:
+                        csidata_buf = np.array([csidata])
+                    else:
+                        csidata_buf = np.vstack((csidata_buf, [csidata]))
 
-            global last_time, frame_count, fps
-            frame_count += 1
-            if time() - last_time > 1:
-                fps = frame_count / (time() - last_time)
-                last_time = time()
-                frame_count = 0
+                    rssi_value = csi.iloc[0, 3]
+                    rssi_data.append(rssi_value)
 
-            update(csi_buffer)
-        else:
-            print(line, end=None)
+                    if csi_path is not None:
+                        csi.to_csv(csi_path, index=False,
+                                   header=False, mode='a')
+
+                    if len(csidata_buf) >= CLIP_SIZE:
+                        csidata_buf = csidata_buf[-CLIP_SIZE:]
+                        rssi_data = rssi_data[-CLIP_SIZE:]
+
+                    global last_time, frame_count, freq
+                    frame_count += 1
+                    if time() - last_time > 1:
+                        freq = frame_count / (time() - last_time)
+                        last_time = time()
+                        frame_count = 0
+
+            else:
+                print(line, end=None)
+        except Exception as e:
+            print(e)
 
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
-        csi_buffer = pd.read_csv(sys.argv[1], header=None)
-        update(csi_buffer)
+        csidata_buf = pd.read_csv(sys.argv[1], header=None)
+        rssi_data = csidata_buf.iloc[:, 3]
+        csidata_buf = np.array(csidata_buf.iloc[:, -1].apply(json.loads))
+        csidata_buf = np.array([np.array(csi[::2])*1j + csi[1::2]
+                                for csi in csidata_buf])
+
+        print(csidata_buf.shape, csidata_buf)
+        ampl = np.abs(csidata_buf)
+        print(ampl.shape, ampl)
+        pca = PCA(n_components=1).fit_transform(ampl)
+        print(pca.shape, pca)
+        update(None)
     else:
         Thread(target=read_serial, daemon=True).start()
 
+    ani = FuncAnimation(fig, update, interval=33,
+                        cache_frame_data=False)  # Update plot at ~30 FPS
     plt.show()
